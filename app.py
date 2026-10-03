@@ -1,13 +1,6 @@
-import json
-import os
 from typing import Dict, List
 
-import boto3
 import streamlit as st
-
-
-DEFAULT_REGION = os.getenv("AWS_REGION", "us-east-1")
-MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
 
 
 def get_demo_items() -> Dict[int, Dict[str, object]]:
@@ -18,43 +11,22 @@ def get_demo_items() -> Dict[int, Dict[str, object]]:
     }
 
 
-def call_bedrock(prompt: str, model_id: str = MODEL_ID) -> str:
-    """Basic Bedrock invocation using the AWS SDK."""
-    try:
-        session = boto3.session.Session(region_name=DEFAULT_REGION)
-        client = session.client("bedrock-runtime")
+def get_inventory_insights(inventory: Dict[int, Dict[str, object]]) -> Dict[str, object]:
+    available_items = [item for item in inventory.values() if item["is_available"]]
+    unavailable_items = [item["name"] for item in inventory.values() if not item["is_available"]]
+    available_value = sum(float(item["price"]) for item in available_items)
+    budget_pick = min(available_items, key=lambda item: float(item["price"]), default=None)
 
-        body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 512,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt}
-                    ],
-                }
-            ],
-        }
-
-        response = client.invoke_model(
-            modelId=model_id,
-            body=json.dumps(body),
-            contentType="application/json",
-            accept="application/json",
-        )
-
-        payload = json.loads(response["body"].read())
-        output = payload["content"][0]["text"]
-        return output.strip()
-    except Exception as exc:  # pragma: no cover - runtime integration error
-        return (
-            "Bedrock is not yet configured. Add AWS credentials and permissions, "
-            f"or set BEDROCK_MODEL_ID/AWS_REGION. Error: {exc}"
-        )
+    return {
+        "total_count": len(inventory),
+        "available_count": len(available_items),
+        "available_value": available_value,
+        "budget_pick": budget_pick,
+        "unavailable_items": unavailable_items,
+    }
 
 
-st.set_page_config(page_title="Inventory + Bedrock Demo", page_icon="☁️", layout="wide")
+st.set_page_config(page_title="Inventory Insights Demo", page_icon="📦", layout="wide")
 
 
 if "items" not in st.session_state:
@@ -75,18 +47,16 @@ def add_item(name: str, price: float, is_available: bool):
     st.session_state["items"] = inventory
 
 
-st.title("AWS + Streamlit Demo")
-st.caption("Inventory dashboard powered by Streamlit, with an optional AWS Bedrock integration.")
+st.title("Inventory Insights")
+st.caption("A small inventory dashboard with transparent, rule-based recommendations. No LLM or AWS API calls.")
 
 sidebar = st.sidebar
-sidebar.title("Configuration")
-sidebar.text_input("AWS Region", value=DEFAULT_REGION, key="aws_region")
-sidebar.text_input("Bedrock Model ID", value=MODEL_ID, key="bedrock_model_id")
+sidebar.title("Demo controls")
 
 if sidebar.button("Reset demo data"):
     st.session_state["items"] = get_demo_items()
 
-col_inventory, col_ai = st.columns([1.35, 1.0])
+col_inventory, col_insights = st.columns([1.35, 1.0])
 
 with col_inventory:
     st.subheader("Inventory")
@@ -95,7 +65,11 @@ with col_inventory:
         {"id": item_id, **item_data}
         for item_id, item_data in inventory.items()
     ]
-    st.dataframe(items, use_container_width=True)
+
+    try:
+        st.dataframe(items, width="stretch")
+    except TypeError:
+        st.dataframe(items, use_container_width=True)
 
     with st.form("add_item_form"):
         st.write("Add a new item")
@@ -108,37 +82,25 @@ with col_inventory:
             add_item(name, price, available)
             st.rerun()
 
-with col_ai:
-    st.subheader("Ask AWS Bedrock")
-    prompt = st.text_area(
-        "Prompt",
-        value="Summarize the current inventory and suggest the most popular product.",
-        height=150,
-    )
+with col_insights:
+    st.subheader("Local inventory insights")
+    st.caption("Rule-based results calculated in this app; no model call is made.")
 
-    if st.button("Generate response"):
-        with st.spinner("Calling Bedrock..."):
-            answer = call_bedrock(prompt, st.session_state.bedrock_model_id)
-        st.markdown("### Response")
-        st.write(answer)
+    insights = get_inventory_insights(inventory)
+    st.metric("Available items", f"{insights['available_count']} / {insights['total_count']}")
+    st.metric("Available inventory value", f"${insights['available_value']:.2f}")
 
-    st.markdown("### Notes")
-    st.info(
-        "This app is a starter pattern for learning AWS Bedrock, ECS, ECR, and ELB. "
-        "In production, place credentials in IAM roles and run the container through ECS "
-        "behind an Elastic Load Balancer."
-    )
-
-    with st.expander("Example AWS deployment flow"):
-        st.markdown(
-            """
-            1. Push app code to GitHub.
-            2. Build Docker image and push to ECR.
-            3. Create an ECS task definition and service.
-            4. Place the service behind an Application Load Balancer.
-            5. Use IAM roles for Bedrock access.
-            """
+    budget_pick = insights["budget_pick"]
+    if budget_pick:
+        st.success(
+            f"Budget pick: {budget_pick['name']} (${float(budget_pick['price']):.2f})"
         )
+    else:
+        st.warning("No items are currently available.")
+
+    unavailable_items = insights["unavailable_items"]
+    if unavailable_items:
+        st.warning("Restock: " + ", ".join(unavailable_items))
 
 
 if __name__ == "__main__":
